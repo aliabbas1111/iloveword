@@ -1,0 +1,13 @@
+# Shared proxy settings — mounted at /etc/nginx/proxy_params_inline.
+proxy_http_version 1.1;
+proxy_set_header Host              $host;
+proxy_set_header X-Real-IP         $remote_addr;
+# get_remote_address() in the app reads the left-most entry of this header.
+# uvicorn must run with --forwarded-allow-ips for it to be trusted.
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+proxy_set_header Connection        "";
+# Let the application's own JSON errors reach the client instead of replacing
+# them with a generic nginx page.
+proxy_intercept_errors off;

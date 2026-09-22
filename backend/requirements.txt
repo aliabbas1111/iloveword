@@ -1,0 +1,22 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9      # required for multipart/form-data — missing it is a silent 422
+anyio>=4.4
+slowapi>=0.1.9              # per-IP rate limiting
+redis>=5.0                  # shared rate-limit counters across workers
+
+python-docx>=1.1.2
+docxcompose>=1.4.0
+lxml>=5.2
+
+pdf2docx>=0.5.8
+pymupdf>=1.24                # page rendering + exact page counts
+mammoth>=1.8                 # docx -> clean semantic HTML
+markdown>=3.6
+msoffcrypto-tool>=5.4        # AES encrypt / decrypt of OOXML packages
+pillow>=10.3
+pytesseract>=0.3.10          # needs the `tesseract-ocr` + `tesseract-ocr-ara` system packages
+
+# System requirements (not pip-installable):
+#   libreoffice-writer   — word-to-pdf, html-to-word, markdown-to-word, word-to-jpg, page counts
+#   tesseract-ocr, tesseract-ocr-ara, tesseract-ocr-fra, tesseract-ocr-spa — OCR

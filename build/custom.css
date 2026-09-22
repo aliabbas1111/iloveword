@@ -1,0 +1,41 @@
+/* Project styles — appended to the Tailwind build by build.mjs. */
+
+:root { color-scheme: light; }
+
+body {
+  font-family: 'Cairo', system-ui, 'Segoe UI', Tahoma, sans-serif;
+}
+
+.tool-card {
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.tool-card:hover,
+.tool-card:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 25px -5px rgb(0 0 0 / .1);
+  outline: none;
+}
+.tool-card:focus-visible {
+  box-shadow: 0 0 0 3px #3b82f6;
+}
+
+[hidden] { display: none !important; }
+
+/* Icons are <svg><use href="assets/icons.svg#fa-…"> — sized by font-size so
+   they drop into the same slots the icon font used to occupy. */
+.icon {
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  display: inline-block;
+  vertical-align: -0.125em;
+  flex: none;
+}
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  .tool-card { transition: none; }
+}

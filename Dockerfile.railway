@@ -1,0 +1,111 @@
+# syntax=docker/dockerfile:1.7
+##############################################################################
+# Dockerfile.railway — for Railway (or any single-container PaaS) only.
+#
+# Railway does not support selecting a build target/stage from a multi-stage
+# Dockerfile (confirmed with Railway support: "we don't support that at this
+# time" — https://station.railway.com/questions/use-dockerfile-targets-564aea7a).
+# It always builds whatever stage is LAST in the file. The main ./Dockerfile
+# ends on an nginx stage (for the docker-compose stack, which proxies to a
+# separate `app` container by DNS name) — built alone on Railway, that nginx
+# has no `app` upstream to reach and crashes on startup.
+#
+# This file is the same deps + runtime stages as ./Dockerfile, with the
+# nginx stage simply not present, so "last stage" and "the app" are the same
+# thing. Railway itself already terminates TLS and provides a public domain,
+# so nginx is not needed here at all.
+#
+# Point Railway at this file instead of the default ./Dockerfile:
+#   Settings → Build → Custom Build Command / Dockerfile Path → Dockerfile.railway
+# or set the service variable:
+#   RAILWAY_DOCKERFILE_PATH=Dockerfile.railway
+#
+# Keep this in sync with ./Dockerfile's "deps" and "runtime" stages — they
+# are intentionally duplicated rather than shared, because Railway has no
+# mechanism to build just part of a file.
+##############################################################################
+
+##############################################################################
+# Stage 1 — python dependencies
+# Wheels are built here so the runtime image carries no compiler.
+##############################################################################
+FROM python:3.12-slim-bookworm AS deps
+
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install -r /tmp/requirements.txt
+
+
+##############################################################################
+# Stage 2 — runtime (the last stage in this file — this is what Railway builds)
+##############################################################################
+FROM python:3.12-slim-bookworm AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    HOME=/home/ilw \
+    ILW_TMP_ROOT=/var/tmp/iloveword
+
+# libreoffice-writer-nogui keeps the conversion engine without the desktop
+# stack. The font packages matter: LibreOffice silently renders tofu for
+# Arabic text without them, which looks like a bug in our code.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-writer-nogui \
+        libreoffice-core-nogui \
+        default-jre-headless \
+        fonts-dejavu-core \
+        fonts-liberation2 \
+        fonts-noto-core \
+        fonts-kacst \
+        fonts-hosny-amiri \
+        tesseract-ocr \
+        tesseract-ocr-ara \
+        tesseract-ocr-eng \
+        tesseract-ocr-fra \
+        tesseract-ocr-spa \
+        curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Unprivileged, no login shell.
+RUN groupadd --system --gid 10001 ilw \
+    && useradd --system --uid 10001 --gid ilw --home-dir /home/ilw \
+       --shell /usr/sbin/nologin --create-home ilw
+
+COPY --from=deps /opt/venv /opt/venv
+
+WORKDIR /app
+COPY --chown=root:root backend/ /app/backend/
+# Railway serves the frontend from this same container (no separate nginx
+# here), so the app's own StaticFiles mount in main.py needs it too.
+COPY --chown=root:root frontend/index.html frontend/app.js /app/frontend/
+COPY --chown=root:root frontend/assets/ /app/frontend/assets/
+
+RUN chmod -R a-w /app \
+    && mkdir -p /var/tmp/iloveword \
+    && chown ilw:ilw /var/tmp/iloveword
+
+USER ilw
+WORKDIR /app/backend
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${PORT:-8000}/health || exit 1
+
+# Railway assigns the listen port via $PORT at runtime — it is not known at
+# build time, so it must be read with shell expansion, which requires the
+# shell form of CMD (no exec-array form, unlike the compose Dockerfile).
+CMD uvicorn main:app \
+    --host 0.0.0.0 --port ${PORT:-8000} \
+    --workers 1 \
+    --proxy-headers --forwarded-allow-ips '*' \
+    --timeout-keep-alive 30 \
+    --no-server-header \
+    --log-level info

@@ -1,0 +1,152 @@
+##############################################################################
+# ILoveWord — production stack
+#
+#   docker compose up -d --build
+#
+# Only nginx publishes ports. The app is reachable solely on the internal
+# network, so nobody can bypass the rate limits or the body-size cap by
+# talking to uvicorn directly.
+##############################################################################
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iloveword:4.0.0
+    restart: unless-stopped
+    expose: ["8000"]
+    networks: [internal]
+    logging: *logging
+
+    environment:
+      # ---- limits ------------------------------------------------------
+      ILW_MAX_FILE_MB: "50"
+      ILW_MAX_REQUEST_MB: "200"
+      ILW_MAX_FILES: "20"
+      # Each LibreOffice child peaks around 300–600 MB. 4 × 1 GB ceiling fits
+      # inside the 3 GB container limit below with room for Python itself.
+      # Raise both together, never one alone.
+      ILW_MAX_CONCURRENT_HEAVY: "4"
+      ILW_SOFFICE_MEM_MB: "1024"
+      ILW_SOFFICE_TIMEOUT: "180"
+
+      # ---- rate limiting ----------------------------------------------
+      ILW_RATE_HEAVY: "10/minute"
+      ILW_RATE_LIGHT: "30/minute"
+      ILW_RATE_DEFAULT: "300/hour"
+      ILW_RATE_STORAGE_URI: "redis://redis:6379/0"
+
+      # ---- housekeeping ------------------------------------------------
+      ILW_CLEANUP_INTERVAL_SECONDS: "3600"
+      ILW_WORKSPACE_MAX_AGE_SECONDS: "3600"
+      ILW_TMP_ROOT: "/var/tmp/iloveword"
+
+      # ---- misc --------------------------------------------------------
+      # nginx serves the page from the same origin, so CORS is never used.
+      # Set this to your real origin only if the frontend is hosted elsewhere.
+      ILW_CORS_ORIGINS: "*"
+      ILW_OCR_LANGS: "ara+eng"
+      ILW_LOG_LEVEL: "INFO"
+
+    depends_on:
+      redis: { condition: service_healthy }
+
+    # ---- isolation -----------------------------------------------------
+    user: "10001:10001"
+    read_only: true              # the image itself cannot be modified at runtime
+    security_opt:
+      - no-new-privileges:true   # a setuid binary cannot escalate
+    cap_drop: [ALL]              # document parsers need no capabilities
+    tmpfs:
+      # Work files live in RAM and vanish with the container. size= is the
+      # disk-exhaustion guard: a flood fills this, not the host volume.
+      - /var/tmp/iloveword:rw,noexec,nosuid,nodev,size=2g,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+      - /home/ilw:rw,nosuid,nodev,size=128m,uid=10001,gid=10001
+
+    # ---- resources -----------------------------------------------------
+    deploy:
+      resources:
+        limits: { cpus: "4.0", memory: 3g }
+        reservations: { memory: 512m }
+    pids_limit: 512              # a fork bomb in a parser hits this first
+    ulimits:
+      nofile: { soft: 4096, hard: 8192 }
+      core: 0
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Rate-limit counters only — nothing here needs to survive a restart, so
+    # persistence is off and the whole dataset is capped.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+    networks: [internal]
+    logging: *logging
+    user: "999:999"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: ["/data:size=64m"]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 192m }
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    image: iloveword-web:4.0.0
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The config and the static files are baked into the image (rebuild to
+      # change them). Only the certificates come from the host.
+      - ./nginx/certs:/etc/nginx/certs:ro          # fullchain.pem + privkey.pem
+      - ./nginx/acme:/var/www/acme:ro              # certbot webroot
+    networks: [internal, edge]
+    logging: *logging
+    depends_on:
+      app: { condition: service_healthy }
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=64m
+      - /var/run:size=16m
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256m }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  internal:
+    internal: true    # no route to the internet from app or redis
+  edge:
